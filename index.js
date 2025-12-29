@@ -8,6 +8,7 @@ const {
 } = require("discord.js");
 const fs = require("fs");
 const path = require("path");
+const http = require("http");
 
 /* ================= ENV ================= */
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -41,7 +42,7 @@ function defaultGuildSettings() {
 const settingsByGuild = new Map();
 let supportersByGuild = {};
 
-/* ================= FS ================= */
+/* ================= FS HELPERS ================= */
 function safeReadJSON(file, fallback) {
   try {
     if (!fs.existsSync(file)) {
@@ -113,61 +114,38 @@ const commands = [
     .setName("interval")
     .setDescription("Set reply interval")
     .addIntegerOption(o =>
-      o.setName("amount")
-        .setDescription("Messages count")
-        .setRequired(true)
+      o.setName("amount").setDescription("Messages count").setRequired(true)
     ),
 
-  new SlashCommandBuilder()
-    .setName("enable")
-    .setDescription("Enable auto replies"),
-
-  new SlashCommandBuilder()
-    .setName("disable")
-    .setDescription("Disable auto replies"),
+  new SlashCommandBuilder().setName("enable").setDescription("Enable auto replies"),
+  new SlashCommandBuilder().setName("disable").setDescription("Disable auto replies"),
 
   new SlashCommandBuilder()
     .setName("edit")
     .setDescription("Edit fallback message")
     .addStringOption(o =>
-      o.setName("text")
-        .setDescription("New message")
-        .setRequired(true)
+      o.setName("text").setDescription("New message").setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("pooladd")
     .setDescription("Add pool message")
     .addStringOption(o =>
-      o.setName("text")
-        .setDescription("Message text")
-        .setRequired(true)
+      o.setName("text").setDescription("Message text").setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("poolremove")
     .setDescription("Remove pool message")
     .addIntegerOption(o =>
-      o.setName("index")
-        .setDescription("Message number")
-        .setRequired(true)
+      o.setName("index").setDescription("Message number").setRequired(true)
     ),
 
-  new SlashCommandBuilder()
-    .setName("poollist")
-    .setDescription("Show message pool"),
+  new SlashCommandBuilder().setName("poollist").setDescription("Show message pool"),
+  new SlashCommandBuilder().setName("poolclear").setDescription("Clear message pool"),
 
-  new SlashCommandBuilder()
-    .setName("poolclear")
-    .setDescription("Clear message pool"),
-
-  new SlashCommandBuilder()
-    .setName("supportadd")
-    .setDescription("Add support slot"),
-
-  new SlashCommandBuilder()
-    .setName("supportremove")
-    .setDescription("Remove support slot"),
+  new SlashCommandBuilder().setName("supportadd").setDescription("Add support slot"),
+  new SlashCommandBuilder().setName("supportremove").setDescription("Remove support slot"),
 ].map(c => c.toJSON());
 
 /* ================= READY ================= */
@@ -178,13 +156,14 @@ client.once("ready", async () => {
   console.log(`🤖 Logged in as ${client.user.tag}`);
 });
 
-/* ================= MESSAGE ================= */
+/* ================= MESSAGE HANDLER ================= */
 client.on("messageCreate", async msg => {
   if (!msg.guild || msg.author.bot) return;
 
-  if (msg.author.id === OWNER_ID &&
-      msg.content.startsWith("..meowbot globalmessage ")) {
-
+  if (
+    msg.author.id === OWNER_ID &&
+    msg.content.startsWith("..meowbot globalmessage ")
+  ) {
     const text = msg.content.slice(26).trim();
     for (const g of client.guilds.cache.values()) {
       try {
@@ -209,100 +188,115 @@ client.on("messageCreate", async msg => {
   }
 });
 
-/* ================= INTERACTIONS ================= */
+/* ================= INTERACTIONS (FIXED) ================= */
 client.on("interactionCreate", async i => {
   if (!i.isChatInputCommand() || !i.guildId) return;
 
+  await i.deferReply(); // ✅ REQUIRED
+
   const s = getGuildSettings(i.guildId);
+  const name = i.commandName;
+
   const staffOnly = new Set([
-    "interval", "enable", "disable",
-    "edit", "pooladd", "poolremove", "poolclear"
+    "interval",
+    "enable",
+    "disable",
+    "edit",
+    "pooladd",
+    "poolremove",
+    "poolclear",
   ]);
 
-  if (staffOnly.has(i.commandName) && !isStaff(i)) {
-    return i.reply({ content: "Staff only", ephemeral: true });
+  if (staffOnly.has(name) && !isStaff(i)) {
+    return i.editReply({ content: "Staff only", ephemeral: true });
   }
 
-  if (i.commandName === "interval") {
+  if (name === "interval") {
     s.interval = Math.max(1, i.options.getInteger("amount"));
     s.counter = 0;
     saveAllSoon();
-    return i.reply(`Interval set to ${s.interval}`);
+    return i.editReply(`Interval set to ${s.interval}`);
   }
 
-  if (i.commandName === "enable") {
-    s.enabled = true; saveAllSoon();
-    return i.reply("Enabled");
+  if (name === "enable") {
+    s.enabled = true;
+    saveAllSoon();
+    return i.editReply("Enabled");
   }
 
-  if (i.commandName === "disable") {
-    s.enabled = false; saveAllSoon();
-    return i.reply("Disabled");
+  if (name === "disable") {
+    s.enabled = false;
+    saveAllSoon();
+    return i.editReply("Disabled");
   }
 
-  if (i.commandName === "edit") {
+  if (name === "edit") {
     s.customMessage = i.options.getString("text");
     saveAllSoon();
-    return i.reply("Updated");
+    return i.editReply("Updated");
   }
 
-  if (i.commandName === "pooladd") {
+  if (name === "pooladd") {
     const max = getMaxSlotsForGuild(i.guildId);
     if (s.messagePool.length >= max) {
-      return i.reply(`Pool full (${max}) ${SUPPORT_INVITE}`);
+      return i.editReply(`Pool full (${max}) ${SUPPORT_INVITE}`);
     }
     s.messagePool.push(i.options.getString("text"));
     saveAllSoon();
-    return i.reply("Added");
+    return i.editReply("Added");
   }
 
-  if (i.commandName === "poolremove") {
+  if (name === "poolremove") {
     const idx = i.options.getInteger("index") - 1;
-    if (idx < 0 || idx >= s.messagePool.length) return i.reply("Bad index");
+    if (idx < 0 || idx >= s.messagePool.length) {
+      return i.editReply("Invalid index");
+    }
     s.messagePool.splice(idx, 1);
     saveAllSoon();
-    return i.reply("Removed");
+    return i.editReply("Removed");
   }
 
-  if (i.commandName === "poolclear") {
+  if (name === "poolclear") {
     s.messagePool = [];
     saveAllSoon();
-    return i.reply("Cleared");
+    return i.editReply("Cleared");
   }
 
-  if (i.commandName === "poollist") {
-    return i.reply(
+  if (name === "poollist") {
+    return i.editReply(
       s.messagePool.length
         ? s.messagePool.map((m, i) => `${i + 1}. ${m}`).join("\n")
         : `Fallback: ${s.customMessage}`
     );
   }
 
-  if (i.commandName === "supportadd") {
+  if (name === "supportadd") {
     try {
       const g = await client.guilds.fetch(SUPPORT_GUILD_ID);
       await g.members.fetch(i.user.id);
       supportersByGuild[i.guildId] ??= {};
       supportersByGuild[i.guildId][i.user.id] = true;
       saveAllSoon();
-      return i.reply("Support added");
+      return i.editReply("Support added");
     } catch {
-      return i.reply({ content: `Join first: ${SUPPORT_INVITE}`, ephemeral: true });
+      return i.editReply({
+        content: `Join first: ${SUPPORT_INVITE}`,
+        ephemeral: true,
+      });
     }
   }
 
-  if (i.commandName === "supportremove") {
+  if (name === "supportremove") {
     delete supportersByGuild[i.guildId]?.[i.user.id];
     saveAllSoon();
-    return i.reply("Support removed");
+    return i.editReply("Support removed");
   }
 });
 
 /* ================= LOGIN ================= */
 client.login(TOKEN);
-// ---- Dummy HTTP server for Render Free ----
-const http = require("http");
 
+/* ================= DUMMY HTTP SERVER (RENDER FREE) ================= */
 const PORT = process.env.PORT || 3000;
 http.createServer((_, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
